@@ -1,0 +1,257 @@
+// ============================================================================
+// Samburu County, Kenya
+// Monthly NDVI CSV from MODIS 16-day NDVI composites
+// Plus October 2025 NDVI GeoTIFF export for demo
+//
+// Dataset:
+//   MODIS/061/MOD13A2
+//
+// Source temporal resolution:
+//   16-day NDVI composites
+//
+// Outputs:
+//   1. CSV: monthly mean NDVI for Samburu, 2017-2025
+//   2. CSV: individual 16-day NDVI composite summaries
+//   3. GeoTIFF: October 2025 NDVI raster for demo
+// ============================================================================
+
+
+// ============================================================================
+// 1. User settings
+// ============================================================================
+
+var startYear = 2017;
+var endYear = 2025;
+
+var startDate = ee.Date('2017-01-01');
+var endDate = ee.Date('2026-01-01');
+// End date is exclusive, so this includes through 2025-12-31.
+
+var countyName = 'Samburu';
+
+var exportFolder = 'GEE_Samburu_NDVI_2017_2025';
+
+// MODIS MOD13A2 is approximately 1 km.
+var exportScale = 1000;
+
+// UTM Zone 37N is appropriate for Samburu County.
+var exportCRS = 'EPSG:32637';
+
+
+// ============================================================================
+// 2. Load Samburu County boundary
+// ============================================================================
+
+var samburu = ee.FeatureCollection('FAO/GAUL/2015/level2')
+  .filter(ee.Filter.eq('ADM0_NAME', 'Kenya'))
+  .filter(ee.Filter.eq('ADM2_NAME', countyName));
+
+print('Samburu boundary:', samburu);
+
+// Simplify the geometry to avoid projection/edge transformation errors.
+// This is especially helpful when working with MODIS sinusoidal projection.
+var studyArea = samburu.geometry()
+  .simplify(1000);
+
+Map.centerObject(studyArea, 8);
+Map.addLayer(studyArea, {}, 'Samburu County');
+
+
+// ============================================================================
+// 3. Load MODIS 16-day NDVI composites
+// ============================================================================
+
+// IMPORTANT:
+// Do not clip inside the .map() function.
+// Clipping each MODIS image can trigger projection transformation errors.
+// Instead, use studyArea in reduceRegion() and Export.image.toDrive().
+
+var modisNdvi = ee.ImageCollection('MODIS/061/MOD13A2')
+  .filterDate(startDate, endDate)
+  .select('NDVI')
+  .map(function(image) {
+
+    var date = ee.Date(image.get('system:time_start'));
+
+    var ndvi = image
+      .multiply(0.0001)
+      .rename('ndvi');
+
+    return ee.Image(ndvi)
+      .copyProperties(image, image.propertyNames())
+      .set({
+        'date': date.format('YYYY-MM-dd'),
+        'year': date.get('year'),
+        'month': date.get('month'),
+        'day': date.get('day'),
+        'date_string': date.format('YYYY_MM_dd')
+      });
+  });
+
+print('MODIS 16-day NDVI collection:', modisNdvi);
+print('Number of 16-day NDVI images:', modisNdvi.size());
+
+
+// ============================================================================
+// 4. Preview one NDVI image
+// ============================================================================
+
+var exampleNdvi = ee.Image(modisNdvi.first());
+
+Map.addLayer(
+  exampleNdvi.clip(studyArea),
+  {
+    min: 0,
+    max: 0.8,
+    palette: ['brown', 'yellow', 'green']
+  },
+  'Example MODIS 16-day NDVI'
+);
+
+
+// ============================================================================
+// 5. Create CSV of individual 16-day NDVI composite summaries
+// ============================================================================
+
+var ndvi16DayTable = modisNdvi.map(function(image) {
+
+  image = ee.Image(image);
+
+  var stats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: studyArea,
+    scale: exportScale,
+    maxPixels: 1e13,
+    bestEffort: true
+  });
+
+  return ee.Feature(null, {
+    'county': countyName,
+    'date': image.get('date'),
+    'year': image.get('year'),
+    'month': image.get('month'),
+    'day': image.get('day'),
+    'date_string': image.get('date_string'),
+    'ndvi_mean': stats.get('ndvi'),
+    'source_dataset': 'MODIS/061/MOD13A2',
+    'temporal_resolution': '16-day composite'
+  });
+});
+
+print('16-day NDVI summary table:', ndvi16DayTable.limit(10));
+
+Export.table.toDrive({
+  collection: ndvi16DayTable,
+  description: 'samburu_modis_16day_ndvi_summary_2017_2025',
+  folder: exportFolder,
+  fileNamePrefix: 'samburu_modis_16day_ndvi_summary_2017_2025',
+  fileFormat: 'CSV'
+});
+
+
+// ============================================================================
+// 6. Create monthly NDVI summary CSV
+// ============================================================================
+
+// This creates one row per month.
+// Each monthly value is the mean of all MODIS 16-day NDVI composites
+// with start dates inside that calendar month.
+
+var years = ee.List.sequence(startYear, endYear);
+var months = ee.List.sequence(1, 12);
+
+var monthlyNdviFeatures = years.map(function(year) {
+  return months.map(function(month) {
+
+    var monthStart = ee.Date.fromYMD(year, month, 1);
+    var monthEnd = monthStart.advance(1, 'month');
+
+    var monthlyCollection = modisNdvi.filterDate(monthStart, monthEnd);
+
+    var monthlyNdviImage = monthlyCollection
+      .mean()
+      .rename('ndvi_monthly_mean');
+
+    var stats = monthlyNdviImage.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: studyArea,
+      scale: exportScale,
+      maxPixels: 1e13,
+      bestEffort: true
+    });
+
+    return ee.Feature(null, {
+      'county': countyName,
+      'year': year,
+      'month': month,
+      'month_start': monthStart.format('YYYY-MM-dd'),
+      'month_end': monthEnd.advance(-1, 'day').format('YYYY-MM-dd'),
+      'n_16day_images_in_month': monthlyCollection.size(),
+      'ndvi_monthly_mean': stats.get('ndvi_monthly_mean'),
+      'source_dataset': 'MODIS/061/MOD13A2',
+      'source_temporal_resolution': '16-day composite',
+      'monthly_summary_method': 'mean of available 16-day NDVI composites with start dates inside calendar month'
+    });
+  });
+}).flatten();
+
+var monthlyNdviTable = ee.FeatureCollection(monthlyNdviFeatures);
+
+print('Monthly NDVI summary table:', monthlyNdviTable.limit(12));
+
+Export.table.toDrive({
+  collection: monthlyNdviTable,
+  description: 'samburu_monthly_ndvi_from_modis_16day_2017_2025',
+  folder: exportFolder,
+  fileNamePrefix: 'samburu_monthly_ndvi_from_modis_16day_2017_2025',
+  fileFormat: 'CSV'
+});
+
+
+// ============================================================================
+// 7. Export October 2025 NDVI GeoTIFF for demo
+// ============================================================================
+
+var october2025Start = ee.Date('2025-10-01');
+var october2025End = ee.Date('2025-11-01');
+
+var october2025NdviCollection = modisNdvi
+  .filterDate(october2025Start, october2025End);
+
+print(
+  'Number of MODIS 16-day NDVI images in October 2025:',
+  october2025NdviCollection.size()
+);
+
+var october2025Ndvi = october2025NdviCollection
+  .mean()
+  .rename('ndvi_october_2025');
+
+Map.addLayer(
+  october2025Ndvi.clip(studyArea),
+  {
+    min: 0,
+    max: 0.8,
+    palette: ['brown', 'yellow', 'green']
+  },
+  'Samburu NDVI October 2025'
+);
+
+Export.image.toDrive({
+  image: october2025Ndvi,
+  description: 'samburu_ndvi_october_2025_geotiff',
+  folder: exportFolder,
+  fileNamePrefix: 'samburu_ndvi_october_2025',
+  region: studyArea,
+  scale: exportScale,
+  crs: exportCRS,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});
+
+
+// ============================================================================
+// 8. End of script
+// ============================================================================
+
+print('Script complete. Check the Tasks tab to run CSV and GeoTIFF exports.');
