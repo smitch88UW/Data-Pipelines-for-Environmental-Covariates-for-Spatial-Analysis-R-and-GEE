@@ -26,12 +26,14 @@ Google Earth Engine is used for large-scale raster processing. R is used for org
 
 ## Example application
 
-The example in this repository extracts monthly environmental covariates for Narok, Samburu, and Laikipia counties in Kenya.
+This repository demonstrates a practical workflow for extracting environmental raster data from Google Earth Engine and preparing it for analysis in R.
 
-The workflow produces monthly rasters for:
+The example workflow extracts:
 
-- Mean NDVI
-- Total rainfall in millimeters
+- 16-day MODIS NDVI composites
+- Daily CHIRPS rainfall rasters
+
+for Narok, Samburu, and Laikipia counties in Kenya from 2017 to 2025.
 
 These outputs can be used for analyses related to seasonality, vegetation dynamics, rainfall patterns, animal movement, disease ecology, spatial risk modeling, and One Health surveillance.
 
@@ -39,10 +41,10 @@ These outputs can be used for analyses related to seasonality, vegetation dynami
 
 The workflow uses the following Google Earth Engine datasets:
 
-| Data type | Google Earth Engine dataset | Temporal resolution | Monthly aggregation |
+| Data type | Google Earth Engine dataset | Temporal resolution | Exported output |
 |---|---|---:|---|
-| NDVI | `MODIS/061/MOD13A2` | 16-day | Monthly mean |
-| Rainfall | `UCSB-CHG/CHIRPS/DAILY` | Daily | Monthly sum |
+| NDVI | `MODIS/061/MOD13A2` | 16-day | 16-day NDVI GeoTIFFs |
+| Rainfall | `UCSB-CHG/CHIRPS/DAILY` | Daily | Daily rainfall GeoTIFFs |
 | Administrative boundaries | `FAO/GAUL/2015/level2` | Static | County filter |
 
 ## Repository structure
