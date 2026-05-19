@@ -1,0 +1,420 @@
+# =============================================================================
+# Summarize and Map MODIS NDVI Outputs Exported from Google Earth Engine
+#
+# Purpose:
+#   This script demonstrates how to work with Google Earth Engine outputs in R.
+#   It uses:
+#     1. A CSV of 16-day MODIS NDVI summaries
+#     2. A GeoTIFF of NDVI for a selected month
+#     3. Administrative boundaries downloaded in R using geodata
+#
+# Example use case:
+#   Summarize MODIS 16-day NDVI composites by month and rainfall season,
+#   then clip and map a monthly NDVI GeoTIFF for a selected county.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. Load packages
+# -----------------------------------------------------------------------------
+
+library(dplyr)
+library(readr)
+library(lubridate)
+library(knitr)
+library(kableExtra)
+library(terra)
+library(sf)
+library(ggplot2)
+library(viridis)
+library(ggspatial)
+library(geodata)
+
+
+# -----------------------------------------------------------------------------
+# 2. User settings
+# -----------------------------------------------------------------------------
+
+# Input files exported from Google Earth Engine
+ndvi_csv_path <- "path/to/modis_16day_ndvi_summary.csv"
+ndvi_tif_path <- "path/to/monthly_ndvi_geotiff.tif"
+
+# Study area settings
+country_code <- "KEN"
+admin_level <- 1
+county_name <- "Samburu"
+county_field <- "NAME_1"
+
+# Output directory
+output_dir <- "outputs"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Output file names
+monthly_table_html <- file.path(output_dir, "monthly_ndvi_summary_table.html")
+seasonal_table_html <- file.path(output_dir, "seasonal_ndvi_summary_table.html")
+clipped_raster_path <- file.path(output_dir, "ndvi_selected_month_clipped.tif")
+pretty_map_path <- file.path(output_dir, "ndvi_selected_month_pretty_map.png")
+
+
+# -----------------------------------------------------------------------------
+# 3. Check input files
+# -----------------------------------------------------------------------------
+
+if (!file.exists(ndvi_csv_path)) {
+  stop("NDVI CSV file not found. Check ndvi_csv_path.")
+}
+
+if (!file.exists(ndvi_tif_path)) {
+  stop("NDVI GeoTIFF file not found. Check ndvi_tif_path.")
+}
+
+
+# =============================================================================
+# PART A: Summarize 16-day MODIS NDVI CSV
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 4. Read NDVI 16-day summary CSV
+# -----------------------------------------------------------------------------
+
+ndvi_16day <- readr::read_csv(
+  ndvi_csv_path,
+  show_col_types = FALSE
+)
+
+dplyr::glimpse(ndvi_16day)
+
+
+# -----------------------------------------------------------------------------
+# 5. Clean dates and assign broad Kenya rainfall seasons
+# -----------------------------------------------------------------------------
+
+# Season classification used here:
+#   Hot dry season: January-February
+#   Long rains: March-May
+#   Dry/cool season: June-September
+#   Short rains: October-December
+
+ndvi_clean <- ndvi_16day %>%
+  dplyr::mutate(
+    date = as.Date(date),
+    year = lubridate::year(date),
+    month = lubridate::month(date),
+    month_name = lubridate::month(date, label = TRUE, abbr = FALSE),
+    
+    season = dplyr::case_when(
+      month %in% c(1, 2) ~ "Hot dry season",
+      month %in% c(3, 4, 5) ~ "Long rains",
+      month %in% c(6, 7, 8, 9) ~ "Dry/cool season",
+      month %in% c(10, 11, 12) ~ "Short rains",
+      TRUE ~ NA_character_
+    ),
+    
+    season = factor(
+      season,
+      levels = c(
+        "Hot dry season",
+        "Long rains",
+        "Dry/cool season",
+        "Short rains"
+      )
+    )
+  )
+
+
+# -----------------------------------------------------------------------------
+# 6. Monthly NDVI summary across all years
+# -----------------------------------------------------------------------------
+
+monthly_summary <- ndvi_clean %>%
+  dplyr::group_by(month, month_name, season) %>%
+  dplyr::summarise(
+    n_years = dplyr::n_distinct(year),
+    n_composites = dplyr::n(),
+    composites_per_year = n_composites / n_years,
+    mean_ndvi = mean(ndvi_mean, na.rm = TRUE),
+    sd_ndvi = sd(ndvi_mean, na.rm = TRUE),
+    min_ndvi = min(ndvi_mean, na.rm = TRUE),
+    max_ndvi = max(ndvi_mean, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(month) %>%
+  dplyr::mutate(
+    composites_per_year = round(composites_per_year, 1),
+    mean_ndvi = round(mean_ndvi, 3),
+    sd_ndvi = round(sd_ndvi, 3),
+    min_ndvi = round(min_ndvi, 3),
+    max_ndvi = round(max_ndvi, 3)
+  )
+
+
+# -----------------------------------------------------------------------------
+# 7. Monthly kableExtra table
+# -----------------------------------------------------------------------------
+
+monthly_table <- monthly_summary %>%
+  dplyr::transmute(
+    Month = month_name,
+    Season = season,
+    `Years represented` = n_years,
+    `16-day composites` = n_composites,
+    `Composites/year` = composites_per_year,
+    `Mean NDVI` = mean_ndvi,
+    SD = sd_ndvi,
+    Minimum = min_ndvi,
+    Maximum = max_ndvi
+  )
+
+monthly_kable <- monthly_table %>%
+  knitr::kable(
+    format = "html",
+    caption = "Monthly NDVI summary grouped by MODIS 16-day composite start date",
+    align = c("l", "l", "c", "c", "c", "c", "c", "c", "c")
+  ) %>%
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 13
+  ) %>%
+  kableExtra::column_spec(1, bold = TRUE)
+
+monthly_kable
+
+kableExtra::save_kable(
+  monthly_kable,
+  file = monthly_table_html
+)
+
+
+# -----------------------------------------------------------------------------
+# 8. Seasonal NDVI summary table
+# -----------------------------------------------------------------------------
+
+season_summary <- ndvi_clean %>%
+  dplyr::group_by(season) %>%
+  dplyr::summarise(
+    n_years = dplyr::n_distinct(year),
+    n_composites = dplyr::n(),
+    mean_ndvi = mean(ndvi_mean, na.rm = TRUE),
+    sd_ndvi = sd(ndvi_mean, na.rm = TRUE),
+    min_ndvi = min(ndvi_mean, na.rm = TRUE),
+    max_ndvi = max(ndvi_mean, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(season) %>%
+  dplyr::mutate(
+    mean_ndvi = round(mean_ndvi, 3),
+    sd_ndvi = round(sd_ndvi, 3),
+    min_ndvi = round(min_ndvi, 3),
+    max_ndvi = round(max_ndvi, 3)
+  )
+
+season_table <- season_summary %>%
+  dplyr::transmute(
+    Season = season,
+    `Years represented` = n_years,
+    `16-day composites` = n_composites,
+    `Mean NDVI` = mean_ndvi,
+    SD = sd_ndvi,
+    Minimum = min_ndvi,
+    Maximum = max_ndvi
+  )
+
+season_kable <- season_table %>%
+  knitr::kable(
+    format = "html",
+    caption = "NDVI summary by rainfall season",
+    align = c("l", "c", "c", "c", "c", "c", "c")
+  ) %>%
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 13
+  ) %>%
+  kableExtra::column_spec(1, bold = TRUE)
+
+season_kable
+
+kableExtra::save_kable(
+  season_kable,
+  file = seasonal_table_html
+)
+
+
+# =============================================================================
+# PART B: Clip and map selected NDVI GeoTIFF
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 9. Read NDVI GeoTIFF
+# -----------------------------------------------------------------------------
+
+ndvi_raster <- terra::rast(ndvi_tif_path)
+names(ndvi_raster) <- "ndvi"
+
+print(ndvi_raster)
+
+plot(
+  ndvi_raster,
+  main = "Raw NDVI GeoTIFF"
+)
+
+
+# -----------------------------------------------------------------------------
+# 10. Download administrative boundary using geodata
+# -----------------------------------------------------------------------------
+
+# This downloads administrative boundaries the first time it is run.
+# The files are cached in the folder specified by path.
+admin_boundaries <- geodata::gadm(
+  country = country_code,
+  level = admin_level,
+  path = output_dir
+)
+
+admin_sf <- sf::st_as_sf(admin_boundaries)
+
+# Check available administrative names if filtering fails.
+print(names(admin_sf))
+print(unique(admin_sf[[county_field]]))
+
+
+# -----------------------------------------------------------------------------
+# 11. Filter to selected county
+# -----------------------------------------------------------------------------
+
+county_sf <- admin_sf %>%
+  dplyr::filter(.data[[county_field]] == county_name)
+
+if (nrow(county_sf) == 0) {
+  stop("County boundary not found. Check county_name and county_field.")
+}
+
+plot(
+  sf::st_geometry(county_sf),
+  main = paste(county_name, "boundary")
+)
+
+
+# -----------------------------------------------------------------------------
+# 12. Reproject boundary to match raster CRS
+# -----------------------------------------------------------------------------
+
+county_sf <- sf::st_transform(
+  county_sf,
+  terra::crs(ndvi_raster)
+)
+
+county_vect <- terra::vect(county_sf)
+
+
+# -----------------------------------------------------------------------------
+# 13. Crop and mask raster to county boundary
+# -----------------------------------------------------------------------------
+
+ndvi_clipped <- ndvi_raster %>%
+  terra::crop(county_vect) %>%
+  terra::mask(county_vect)
+
+plot(
+  ndvi_clipped,
+  main = paste("Clipped NDVI:", county_name)
+)
+
+terra::writeRaster(
+  ndvi_clipped,
+  filename = clipped_raster_path,
+  overwrite = TRUE
+)
+
+
+# -----------------------------------------------------------------------------
+# 14. Convert clipped raster to data frame for ggplot
+# -----------------------------------------------------------------------------
+
+ndvi_df <- as.data.frame(
+  ndvi_clipped,
+  xy = TRUE,
+  na.rm = TRUE
+)
+
+head(ndvi_df)
+
+
+# -----------------------------------------------------------------------------
+# 15. Make publication-style NDVI map
+# -----------------------------------------------------------------------------
+
+p_ndvi <- ggplot() +
+  geom_raster(
+    data = ndvi_df,
+    aes(x = x, y = y, fill = ndvi)
+  ) +
+  geom_sf(
+    data = county_sf,
+    fill = NA,
+    color = "black",
+    linewidth = 0.5
+  ) +
+  scale_fill_viridis_c(
+    name = "NDVI",
+    option = "viridis",
+    limits = c(0, 1),
+    na.value = NA
+  ) +
+  ggspatial::annotation_scale(
+    location = "bl",
+    width_hint = 0.25
+  ) +
+  ggspatial::annotation_north_arrow(
+    location = "tr",
+    which_north = "true",
+    style = ggspatial::north_arrow_fancy_orienteering
+  ) +
+  coord_sf() +
+  labs(
+    title = paste("NDVI in", county_name),
+    subtitle = "MODIS NDVI GeoTIFF exported from Google Earth Engine",
+    caption = "NDVI: MODIS via Google Earth Engine. Boundary: GADM via geodata.",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 11),
+    plot.caption = element_text(size = 8, color = "gray30"),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    panel.grid = element_blank()
+  )
+
+p_ndvi
+
+
+# -----------------------------------------------------------------------------
+# 16. Save map
+# -----------------------------------------------------------------------------
+
+ggsave(
+  filename = pretty_map_path,
+  plot = p_ndvi,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+# -----------------------------------------------------------------------------
+# 17. Summary statistics for clipped raster
+# -----------------------------------------------------------------------------
+
+ndvi_stats <- terra::global(
+  ndvi_clipped,
+  fun = c("mean", "min", "max", "sd"),
+  na.rm = TRUE
+)
+
+ndvi_stats
