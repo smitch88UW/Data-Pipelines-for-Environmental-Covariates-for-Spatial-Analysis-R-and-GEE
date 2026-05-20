@@ -1,0 +1,9 @@
+Write a clean Google Earth Engine JavaScript script for Samburu County, Kenya. Use MODIS/061/MOD13A2 NDVI from 2017-01-01 through 2025-12-31. 
+Load Samburu County from FAO/GAUL/2015/level2 using ADM0_NAME = Kenya and ADM2_NAME = Samburu.
+Apply the MODIS NDVI scale factor of 0.0001 and rename the band to ndvi. 
+Do not clip each MODIS image inside the image collection map function, because that can cause MODIS projection transformation errors. Instead, simplify the Samburu geometry and use it only in reduceRegion(), Map.addLayer(), and Export.image.toDrive(). 
+The script should export three outputs to Google Drive: 
+1. A CSV with one row per 16-day MODIS NDVI composite, giving mean NDVI over Samburu. 
+2. A CSV with one row per month from 2017 to 2025, where monthly NDVI is calculated as the mean of available 16-day MODIS NDVI composites with start dates inside that calendar month. 
+3. A GeoTIFF of mean NDVI for October 2025 for a live demo. 
+Add clear section headers and comments. Use export folder GEE_Samburu_NDVI_2017_2025, scale 1000, and CRS EPSG:32637. Make sure the script avoids the Date.get('day', 'month') timezone error by using date.get('day') only.
